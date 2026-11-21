@@ -1,0 +1,5 @@
+Batch ID: 101
+Medicine Name: PARACETMOL
+Expiry Date: 20260101
+Quantity: 100
+-------------------------
