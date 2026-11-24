@@ -1,0 +1,465 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>PharmaFEFO · Min Heap Inventory</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.24.7/babel.min.js"></script>
+</head>
+<body class="bg-slate-50 text-slate-800 font-sans">
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect } = React;
+const KEY = 'pharmafefo-v1';
+
+/* ---------- Dates (DD-MM-YYYY display, ISO internally) ---------- */
+const TODAY = () => { const d = new Date(); d.setHours(0,0,0,0); return d; };
+const toDate = iso => { const [y,m,d] = iso.split('-').map(Number); return new Date(y, m-1, d); };
+const fmt = iso => { const [y,m,d] = iso.split('-'); return `${d}-${m}-${y}`; };
+const days = iso => Math.round((toDate(iso) - TODAY()) / 864e5);
+const todayISO = () => { const t = TODAY(); return [t.getFullYear(), String(t.getMonth()+1).padStart(2,'0'), String(t.getDate()).padStart(2,'0')].join('-'); };
+const parseDMY = s => {
+  const m = /^(\d{2})-(\d{2})-(\d{4})$/.exec(s || ''); if (!m) return null;
+  const d = new Date(+m[3], +m[2]-1, +m[1]);
+  if (d.getDate() !== +m[1] || d.getMonth() !== +m[2]-1) return null;
+  return `${m[3]}-${m[2]}-${m[1]}`;
+};
+const statusOf = b => { const d = days(b.expiry); return d < 0 ? 'Expired' : d <= 60 ? 'Expiring' : b.qty <= 20 ? 'Low' : 'OK'; };
+const BADGE = { Expired:'bg-red-100 text-red-700', Expiring:'bg-amber-100 text-amber-700', Low:'bg-orange-100 text-orange-700', OK:'bg-teal-100 text-teal-700' };
+
+/* ---------- Min Heap keyed on expiry date (ties broken by batch ID) ---------- */
+class MinHeap {
+  constructor() { this.a = []; this.steps = []; }
+  less(i, j) {
+    const A = this.a[i], B = this.a[j];
+    return A.expiry < B.expiry || (A.expiry === B.expiry && A.id < B.id);
+  }
+  swap(i, j) { [this.a[i], this.a[j]] = [this.a[j], this.a[i]]; }
+  push(b) {                                    // Heapify-Up  O(log n)
+    this.a.push(b);
+    let i = this.a.length - 1;
+    while (i > 0) {
+      const p = (i - 1) >> 1;
+      if (!this.less(i, p)) break;
+      this.steps.push(`Heapify-Up: swap ${this.a[i].id} ↔ ${this.a[p].id}`);
+      this.swap(i, p); i = p;
+    }
+  }
+  pop() {                                      // Heapify-Down  O(log n)
+    if (!this.a.length) return null;
+    const top = this.a[0], last = this.a.pop();
+    if (this.a.length) {
+      this.a[0] = last;
+      let i = 0;
+      for (;;) {
+        const l = 2*i+1, r = l+1; let m = i;
+        if (l < this.a.length && this.less(l, m)) m = l;
+        if (r < this.a.length && this.less(r, m)) m = r;
+        if (m === i) break;
+        this.steps.push(`Heapify-Down: swap ${this.a[i].id} ↔ ${this.a[m].id}`);
+        this.swap(i, m); i = m;
+      }
+    }
+    return top;
+  }
+}
+const fefoOrder = list => { const h = new MinHeap(); list.forEach(b => h.push(b)); const out = []; let x; while ((x = h.pop())) out.push(x); return out; };
+
+// Dispense from the earliest non-expired batches of one medicine, using the heap
+const fefoDispense = (batches, name, qty) => {
+  const h = new MinHeap();
+  batches.filter(b => b.name === name && days(b.expiry) >= 0).forEach(b => h.push({...b}));
+  let need = qty; const taken = []; const upd = {};
+  while (need > 0 && h.a.length) {
+    const b = h.pop(), t = Math.min(need, b.qty);
+    need -= t; b.qty -= t; taken.push({ id: b.id, t }); upd[b.id] = b.qty;
+  }
+  return {
+    batches: batches.map(b => upd[b.id] !== undefined ? {...b, qty: upd[b.id]} : b).filter(b => b.qty > 0),
+    taken, steps: h.steps
+  };
+};
+
+/* ---------- Sample data ---------- */
+const SAMPLE_BATCHES = [
+  { id:'B1001', name:'Paracetamol 500mg', expiry:'2026-12-05', qty:120 },
+  { id:'B1002', name:'Paracetamol 500mg', expiry:'2027-03-18', qty:300 },
+  { id:'B1003', name:'Amoxicillin 250mg', expiry:'2026-11-20', qty:40 },
+  { id:'B1004', name:'Amoxicillin 250mg', expiry:'2026-12-28', qty:25 },
+  { id:'B1005', name:'Cetirizine 10mg',   expiry:'2027-06-30', qty:180 },
+  { id:'B1006', name:'Metformin 500mg',   expiry:'2026-12-15', qty:90 },
+  { id:'B1007', name:'Metformin 500mg',   expiry:'2027-01-10', qty:15 },
+  { id:'B1008', name:'Ibuprofen 400mg',   expiry:'2026-12-02', qty:60 },
+  { id:'B1009', name:'Omeprazole 20mg',   expiry:'2027-05-12', qty:200 },
+  { id:'B1010', name:'Vitamin C 500mg',   expiry:'2027-02-01', qty:8 },
+];
+const SAMPLE = () => ({ batches: SAMPLE_BATCHES, expired: [], activity: [{ text: 'Sample inventory loaded', t: new Date().toLocaleString('en-GB') }] });
+function load() { try { const s = JSON.parse(localStorage.getItem(KEY)); if (s && s.batches) return s; } catch(e) {} return SAMPLE(); }
+
+/* ---------- UI primitives ---------- */
+const IN = "border border-slate-200 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-teal-400 w-full md:w-auto";
+const BTN = "bg-teal-600 hover:bg-teal-700 text-white rounded-lg px-4 py-2 text-sm font-medium shadow-sm transition";
+const Panel = ({title, sub, children}) => (
+  <div className="bg-white rounded-2xl shadow-sm border border-slate-100 p-5 md:p-6 mb-6">
+    <h2 className="text-lg font-semibold text-slate-800">{title}</h2>
+    {sub && <p className="text-sm text-slate-500 mb-4">{sub}</p>}
+    {children}
+  </div>
+);
+const Card = ({l, v, s}) => (
+  <div className="bg-white rounded-2xl shadow-sm border border-slate-100 p-5">
+    <p className="text-xs text-slate-500 uppercase tracking-wide">{l}</p>
+    <p className="text-2xl font-semibold text-slate-800 mt-1">{v}</p>
+    {s && <p className="text-xs text-slate-400 mt-1">{s}</p>}
+  </div>
+);
+const Badge = ({s}) => <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${BADGE[s]}`}>{s === 'Expiring' ? 'Expiring soon' : s}</span>;
+const Table = ({head, rows}) => (
+  <div className="overflow-x-auto">
+    <table className="w-full text-sm">
+      <thead><tr className="text-left text-slate-500 border-b">{head.map(h => <th key={h} className="py-2 pr-4 font-medium">{h}</th>)}</tr></thead>
+      <tbody>
+        {rows.length ? rows.map((r, i) => <tr key={i} className="border-b border-slate-100">{r.map((c, j) => <td key={j} className="py-2 pr-4 text-slate-700">{c}</td>)}</tr>)
+          : <tr><td colSpan={head.length} className="py-6 text-center text-slate-400">No records</td></tr>}
+      </tbody>
+    </table>
+  </div>
+);
+const Steps = ({steps}) => (
+  <div className="bg-slate-900 text-teal-200 rounded-xl p-4 font-mono text-xs max-h-48 overflow-y-auto">
+    {steps.length ? steps.slice(-14).map((s, i) => <div key={i}>› {s}</div>) : <div className="text-slate-400">No heap operations yet.</div>}
+  </div>
+);
+
+/* ---------- Pages ---------- */
+function Dash({st, reset}) {
+  const B = st.batches;
+  const names = [...new Set(B.map(b => b.name))];
+  const perMed = names.map(n => ({ n, q: B.filter(b => b.name === n).reduce((s, b) => s + b.qty, 0) }));
+  const totalQ = perMed.reduce((s, m) => s + m.q, 0), tot = totalQ || 1;
+  const next = fefoOrder(B.filter(b => days(b.expiry) >= 0))[0];
+  const soon = fefoOrder(B).filter(b => days(b.expiry) >= 0 && days(b.expiry) <= 60);
+  const maxQ = Math.max(1, ...B.map(b => b.qty));
+  const colors = ['#0d9488','#0ea5e9','#67e8f9','#14b8a6','#38bdf8','#5eead4','#0284c7','#2dd4bf'];
+  let ang = 0;
+  const slices = perMed.map((m, i) => {
+    if (perMed.length === 1) return <circle key={m.n} cx="60" cy="60" r="50" fill={colors[0]}/>;
+    const a = m.q / tot * 2 * Math.PI;
+    const x1 = 60 + 50*Math.sin(ang), y1 = 60 - 50*Math.cos(ang); ang += a;
+    const x2 = 60 + 50*Math.sin(ang), y2 = 60 - 50*Math.cos(ang);
+    return <path key={m.n} d={`M60 60 L${x1} ${y1} A50 50 0 ${a > Math.PI ? 1 : 0} 1 ${x2} ${y2} Z`} fill={colors[i % colors.length]}><title>{m.n}: {m.q}</title></path>;
+  });
+  return <>
+    <div className="grid grid-cols-2 xl:grid-cols-3 gap-4 mb-6">
+      <Card l="Total batches" v={B.length}/>
+      <Card l="Medicines" v={names.length}/>
+      <Card l="Total units" v={totalQ.toLocaleString()}/>
+      <Card l="Expired batches" v={B.filter(b => days(b.expiry) < 0).length} s="Awaiting purge"/>
+      <Card l="Low stock" v={perMed.filter(m => m.q < 50).length} s="Medicines under 50 units"/>
+      <Card l="Next expiring" v={next ? fmt(next.expiry) : '—'} s={next ? `${next.name} · ${next.id}` : ''}/>
+    </div>
+    <div className="grid lg:grid-cols-2 gap-6">
+      <Panel title="Stock distribution" sub="Share of units per medicine">
+        <div className="flex flex-wrap items-center gap-6">
+          <svg viewBox="0 0 120 120" className="w-40 h-40">{slices}</svg>
+          <div className="text-xs space-y-1">{perMed.map((m, i) => <div key={m.n} className="flex items-center gap-2"><span className="w-3 h-3 rounded-sm" style={{background: colors[i % colors.length]}}/>{m.n} · {m.q}</div>)}</div>
+        </div>
+      </Panel>
+      <Panel title="Quantity per batch" sub="Units available in each batch">
+        <div className="space-y-2">{B.map(b => (
+          <div key={b.id} className="flex items-center gap-3 text-xs">
+            <span className="w-20 text-slate-500">{b.id}</span>
+            <div className="flex-1 bg-slate-100 rounded-full h-3"><div className="bg-gradient-to-r from-sky-400 to-teal-500 h-3 rounded-full" style={{width: `${b.qty/maxQ*100}%`}}/></div>
+            <span className="w-10 text-right">{b.qty}</span>
+          </div>))}
+        </div>
+      </Panel>
+    </div>
+    <div className="grid lg:grid-cols-2 gap-6">
+      <Panel title="Approaching expiry" sub="Batches expiring within 60 days, earliest first">
+        <Table head={['Batch','Medicine','Expires','Days left']} rows={soon.map(b => [b.id, b.name, fmt(b.expiry), days(b.expiry)])}/>
+      </Panel>
+      <Panel title="Recent activity">
+        <ul className="space-y-3 text-sm">{st.activity.map((a, i) => <li key={i} className="border-l-2 border-teal-400 pl-3"><div>{a.text}</div><div className="text-xs text-slate-400">{a.t}</div></li>)}</ul>
+        <button onClick={reset} className="mt-5 text-sm text-slate-500 hover:text-teal-700 underline">Reset sample data</button>
+      </Panel>
+    </div>
+  </>;
+}
+
+function AddBatch({addBatch}) {
+  const empty = {id:'', name:'', expiry:'', qty:''};
+  const [f, setF] = useState(empty);
+  const set = k => e => setF({...f, [k]: e.target.value});
+  const submit = () => { if (addBatch(f)) setF(empty); };
+  return <Panel title="Add medicine batch" sub="Batches are placed into the Min Heap for their medicine by expiry date">
+    <div className="grid md:grid-cols-2 gap-4 max-w-2xl">
+      <label className="text-sm">Batch ID<input className={IN + " mt-1 w-full"} placeholder="B1011" value={f.id} onChange={set('id')}/></label>
+      <label className="text-sm">Medicine name<input className={IN + " mt-1 w-full"} placeholder="Azithromycin 500mg" value={f.name} onChange={set('name')}/></label>
+      <label className="text-sm">Expiry date (DD-MM-YYYY)<input className={IN + " mt-1 w-full"} placeholder="15-06-2027" value={f.expiry} onChange={set('expiry')}/></label>
+      <label className="text-sm">Quantity<input className={IN + " mt-1 w-full"} type="number" min="1" placeholder="100" value={f.qty} onChange={set('qty')}/></label>
+    </div>
+    <button onClick={submit} className={BTN + " mt-6"}>Add batch</button>
+  </Panel>;
+}
+
+function Inventory({st}) {
+  const [q, setQ] = useState(''), [f, setF] = useState('All');
+  const rows = fefoOrder(st.batches).filter(b => (b.id + b.name).toLowerCase().includes(q.toLowerCase()) && (f === 'All' || statusOf(b) === f));
+  return <Panel title="Inventory · FEFO order" sub="Read from the Min Heap: earliest expiry first">
+    <div className="flex flex-wrap gap-3 mb-4">
+      <input className={IN} placeholder="Search name or batch ID" value={q} onChange={e => setQ(e.target.value)}/>
+      <select className={IN} value={f} onChange={e => setF(e.target.value)}>{['All','OK','Expiring','Low','Expired'].map(o => <option key={o}>{o}</option>)}</select>
+    </div>
+    <Table head={['Batch ID','Medicine','Expiry','Quantity','Status']} rows={rows.map(b => [b.id, b.name, fmt(b.expiry), b.qty, <Badge s={statusOf(b)}/>])}/>
+  </Panel>;
+}
+
+function Dispense({st, dispense}) {
+  const names = [...new Set(st.batches.map(b => b.name))];
+  const [name, setName] = useState(names[0] || ''), [qty, setQty] = useState('');
+  const avail = st.batches.filter(b => b.name === name && days(b.expiry) >= 0).reduce((s, b) => s + b.qty, 0);
+  return <Panel title="Dispense medicine (FEFO)" sub="The batch with the earliest expiry is always used first">
+    <div className="flex flex-wrap gap-3 items-end">
+      <label className="text-sm">Medicine<select className={IN + " mt-1 block"} value={name} onChange={e => setName(e.target.value)}>{names.map(n => <option key={n}>{n}</option>)}</select></label>
+      <label className="text-sm">Quantity<input className={IN + " mt-1 block"} type="number" min="1" value={qty} onChange={e => setQty(e.target.value)}/></label>
+      <button onClick={() => dispense(name, qty)} className={BTN}>Dispense</button>
+    </div>
+    <p className="text-sm text-slate-500 mt-4">Available (non-expired): <b>{avail}</b> units</p>
+  </Panel>;
+}
+
+function PartialDispense({st, partial}) {
+  const names = [...new Set(st.batches.map(b => b.name))];
+  const [name, setName] = useState(names[0] || '');
+  const list = st.batches.filter(b => b.name === name && days(b.expiry) >= 0);
+  const [id, setId] = useState(''), [qty, setQty] = useState('');
+  const sel = list.find(b => b.id === id) || list[0];
+  return <Panel title="Partial dispensing" sub="Choose a specific batch and dispense part of it. Example: 100 units − 20 = 80 remaining">
+    <div className="flex flex-wrap gap-3 items-end">
+      <label className="text-sm">Medicine<select className={IN + " mt-1 block"} value={name} onChange={e => { setName(e.target.value); setId(''); }}>{names.map(n => <option key={n}>{n}</option>)}</select></label>
+      <label className="text-sm">Batch<select className={IN + " mt-1 block"} value={sel ? sel.id : ''} onChange={e => setId(e.target.value)}>{list.map(b => <option key={b.id} value={b.id}>{b.id} · exp {fmt(b.expiry)} · {b.qty}</option>)}</select></label>
+      <label className="text-sm">Quantity<input className={IN + " mt-1 block"} type="number" min="1" value={qty} onChange={e => setQty(e.target.value)}/></label>
+      <button onClick={() => sel && partial(sel.id, qty)} className={BTN}>Dispense part</button>
+    </div>
+  </Panel>;
+}
+
+function Purge({st, purge}) {
+  const exp = st.batches.filter(b => days(b.expiry) < 0);
+  return <Panel title="Purge expired medicines" sub={`Today is ${new Date().toLocaleDateString('en-GB')}. Expired batches are moved to the expired log.`}>
+    <Table head={['Batch ID','Medicine','Expiry','Quantity']} rows={exp.map(b => [b.id, b.name, fmt(b.expiry), b.qty])}/>
+    <button onClick={purge} disabled={!exp.length} className={BTN + " mt-5 disabled:opacity-40"}>Purge {exp.length} expired batch{exp.length === 1 ? '' : 'es'}</button>
+  </Panel>;
+}
+
+function ExpiredLog({st}) {
+  const [q, setQ] = useState('');
+  const rows = st.expired.filter(e => (e.id + e.name).toLowerCase().includes(q.toLowerCase()));
+  return <Panel title="Expired stock log" sub="Records of every batch removed by purging">
+    <input className={IN + " mb-4"} placeholder="Search name or batch ID" value={q} onChange={e => setQ(e.target.value)}/>
+    <Table head={['Batch ID','Medicine','Expiry','Previous qty','Removed on']} rows={rows.map(e => [e.id, e.name, fmt(e.expiry), e.prevQty, fmt(e.removed)])}/>
+  </Panel>;
+}
+
+function Comparison({st}) {
+  const n = st.batches.length || 1;
+  const B = st.batches;
+  let scan = 0, best = null;
+  B.forEach(b => { scan++; if (!best || b.expiry < best.expiry) best = b; });
+  const hs = Math.max(1, Math.ceil(Math.log2(n + 1)));
+  const rows = [
+    ['Find earliest', hs, 1, Math.max(1, scan)],
+    ['Delete earliest', hs, 1, n],
+    ['Insert batch', hs, n, 1],
+  ];
+  const max = Math.max(...rows.flatMap(r => r.slice(1)));
+  const cols = ['bg-teal-500', 'bg-sky-400', 'bg-slate-300'];
+  return <>
+    <Panel title="Time complexity" sub="Asymptotic costs for n batches">
+      <Table head={['Operation','Min Heap','Sorted List','Unsorted List']} rows={[
+        ['Insertion','O(log n)','O(n)','O(1)'],
+        ['Find minimum','O(1)','O(1)','O(n)'],
+        ['Delete minimum','O(log n)','O(1)','O(n)'],
+      ]}/>
+    </Panel>
+    <div className="grid lg:grid-cols-2 gap-6">
+      <Panel title="Live comparison" sub={`Estimated steps on your current ${B.length} batches (worst case)`}>
+        <div className="space-y-4">{rows.map(([label, ...vals]) => (
+          <div key={label}>
+            <p className="text-sm font-medium mb-1">{label}</p>
+            {vals.map((v, i) => (
+              <div key={i} className="flex items-center gap-2 text-xs mb-1">
+                <span className="w-24 text-slate-500">{['Min Heap','Sorted','Unsorted'][i]}</span>
+                <div className="flex-1 bg-slate-100 rounded-full h-2"><div className={`${cols[i]} h-2 rounded-full`} style={{width: `${v/max*100}%`}}/></div>
+                <span className="w-6 text-right">{v}</span>
+              </div>))}
+          </div>))}
+        </div>
+      </Panel>
+      <Panel title="Earliest-expiring selection" sub="Each structure returns the same batch">
+        <div className="text-sm space-y-2">
+          <p><b>Min Heap:</b> root → {B.length ? fefoOrder(B)[0].id : '—'}</p>
+          <p><b>Sorted list:</b> first element → {B.length ? [...B].sort((a,b) => a.expiry < b.expiry ? -1 : 1)[0].id : '—'}</p>
+          <p><b>Unsorted list:</b> full scan of {scan} items → {best ? best.id : '—'}</p>
+        </div>
+        <div className="mt-5 text-sm text-slate-600 space-y-2">
+          <p><b>Min Heap</b> is a complete binary tree where each parent expires no later than its children.</p>
+          <p><b>Sorted list</b> keeps everything ordered, so inserts shift elements.</p>
+          <p><b>Unsorted list</b> is cheap to insert but must be scanned to find the minimum.</p>
+        </div>
+      </Panel>
+    </div>
+  </>;
+}
+
+function HeapViz({st, dispense, lastOp}) {
+  const names = [...new Set(st.batches.map(b => b.name))];
+  const [name, setName] = useState(names[0] || '');
+  const list = st.batches.filter(b => b.name === name && days(b.expiry) >= 0);
+  const h = new MinHeap(); list.forEach(b => h.push(b));
+  const arr = h.a;
+  const root = arr[0];
+  return <>
+    <Panel title="Min Heap visualization" sub="Root = earliest-expiring active batch for the selected medicine. Insertions use Heapify-Up, removals use Heapify-Down.">
+      <div className="flex flex-wrap gap-3 items-end mb-4">
+        <label className="text-sm">Medicine<select className={IN + " mt-1 block"} value={name} onChange={e => setName(e.target.value)}>{names.map(n => <option key={n}>{n}</option>)}</select></label>
+        {root && <button onClick={() => dispense(name, root.qty)} className={BTN}>Dispense root ({root.id})</button>}
+      </div>
+      {arr.length ? <>
+        <svg viewBox={`0 0 720 ${80 + Math.ceil(Math.log2(arr.length + 1)) * 90}`} className="w-full">
+          {arr.map((_, i) => { if (!i) return null; const p = (i-1)>>1, pp = pos(p), cp = pos(i);
+            return <line key={'l'+i} x1={pp.x} y1={pp.y} x2={cp.x} y2={cp.y} stroke="#cbd5e1" strokeWidth="2"/>; })}
+          {arr.map((b, i) => { const p = pos(i), root = i === 0;
+            return <g key={b.id}>
+              <circle cx={p.x} cy={p.y} r="36" fill={root ? '#0d9488' : '#e0f2fe'} stroke={root ? '#0f766e' : '#7dd3fc'} strokeWidth="2"/>
+              <text x={p.x} y={p.y-4} textAnchor="middle" fontSize="10" fontWeight="600" fill={root ? '#fff' : '#0f172a'}>{fmt(b.expiry)}</text>
+              <text x={p.x} y={p.y+10} textAnchor="middle" fontSize="9" fill={root ? '#ccfbf1' : '#64748b'}>{b.id} · {b.qty}</text>
+            </g>; })}
+        </svg>
+        <p className="text-xs text-teal-700 mt-2">● Teal root = earliest expiry → next batch to dispense</p>
+      </> : <p className="text-slate-400 text-sm">No active batches for this medicine.</p>}
+    </Panel>
+    <Panel title="Last heap operation" sub="Swap trace from the most recent insert or dispense">
+      <Steps steps={lastOp ? lastOp.steps : []}/>
+    </Panel>
+  </>;
+}
+
+/* ---------- App shell ---------- */
+const NAV = [
+  ['dash','Dashboard','📊'], ['add','Add Batch','➕'], ['inv','Display Inventory','📦'],
+  ['disp','Dispense (FEFO)','💊'], ['part','Partial Dispensing','✂️'], ['purge','Purge Expired','🗑️'],
+  ['log','Expired Stock Log','📜'], ['cmp','DS Comparison','⚖️'], ['heap','Min Heap Visualizer','🌳'],
+];
+
+function App() {
+  const [st, setSt] = useState(load);
+  const [page, setPage] = useState('dash');
+  const [toast, setToast] = useState(null);
+  const [lastOp, setLastOp] = useState(null);
+  useEffect(() => { localStorage.setItem(KEY, JSON.stringify(st)); }, [st]);
+
+  const note = (msg, type) => { setToast({msg, type}); setTimeout(() => setToast(null), 3200); };
+  const ok = m => note(m, 'ok'), warn = m => note(m, 'warn'), err = m => note(m, 'err');
+  const logA = text => [{text, t: new Date().toLocaleString('en-GB')}, ...st.activity].slice(0, 12);
+
+  const addBatch = nb => {
+    const id = nb.id.trim().toUpperCase(), name = nb.name.trim(), iso = parseDMY(nb.expiry.trim()), q = Number(nb.qty);
+    if (!id || !name) { err('Batch ID and medicine name are required.'); return false; }
+    if (st.batches.some(b => b.id === id)) { err(`Batch ${id} already exists. Use a unique ID.`); return false; }
+    if (!iso) { err('Expiry must be a valid date in DD-MM-YYYY format.'); return false; }
+    if (!Number.isInteger(q) || q <= 0) { err('Quantity must be a positive whole number.'); return false; }
+    const batch = {id, name, expiry: iso, qty: q};
+    const h = new MinHeap(); st.batches.filter(b => b.name === name).forEach(b => h.push(b));
+    h.steps = []; h.push(batch);
+    setLastOp({type: 'Insert', steps: h.steps});
+    setSt({...st, batches: [...st.batches, batch], activity: logA(`Added ${id} · ${name} · ${q} units`)});
+    ok(`Batch ${id} added and heap re-ordered.`);
+    return true;
+  };
+
+  const dispense = (name, qty) => {
+    const q = Number(qty);
+    if (!name) { err('Select a medicine.'); return; }
+    if (!(q > 0)) { err('Enter a valid quantity.'); return; }
+    const avail = st.batches.filter(b => b.name === name && days(b.expiry) >= 0).reduce((s, b) => s + b.qty, 0);
+    if (q > avail) { warn(`Only ${avail} units of ${name} are available. Request not fulfilled.`); return; }
+    const r = fefoDispense(st.batches, name, q);
+    setLastOp({type: 'Dispense', steps: r.steps});
+    setSt({...st, batches: r.batches, activity: logA(`Dispensed ${q} × ${name} from ${r.taken.map(t => `${t.id} (${t.t})`).join(', ')}`)});
+    ok(`Dispensed ${q} units of ${name}.`);
+  };
+
+  const partial = (id, qty) => {
+    const q = Number(qty), b = st.batches.find(x => x.id === id);
+    if (!b) { err('Select a batch.'); return; }
+    if (!(q > 0)) { err('Enter a valid quantity.'); return; }
+    if (q > b.qty) { warn(`Batch ${id} has only ${b.qty} units.`); return; }
+    const left = b.qty - q;
+    const batches = left === 0 ? st.batches.filter(x => x.id !== id) : st.batches.map(x => x.id === id ? {...x, qty: left} : x);
+    setSt({...st, batches, activity: logA(`Partial: ${q} from ${id} · ${left} remaining${left === 0 ? ' (batch removed)' : ''}`)});
+    ok(`Dispensed ${q} from ${id}. Remaining: ${left}.`);
+  };
+
+  const purge = () => {
+    const exp = st.batches.filter(b => days(b.expiry) < 0);
+    if (!exp.length) { note('No expired batches to purge.', 'ok'); return; }
+    if (!window.confirm(`Remove ${exp.length} expired batch(es) from active inventory?`)) return;
+    const today = todayISO();
+    const entries = exp.map(b => ({id: b.id, name: b.name, expiry: b.expiry, prevQty: b.qty, removed: today}));
+    setSt({...st, batches: st.batches.filter(b => days(b.expiry) >= 0), expired: [...entries, ...st.expired],
+      activity: logA(`Purged ${exp.length} expired batch(es)`)});
+    setLastOp(null);
+    ok(`${exp.length} expired batch(es) moved to the expired log.`);
+  };
+
+  const reset = () => {
+    if (!window.confirm('Reset to sample data? Current changes will be lost.')) return;
+    setSt(SAMPLE()); setLastOp(null); ok('Sample data restored.');
+  };
+
+  const props = {st, addBatch, dispense, partial, purge, reset, lastOp};
+  const TOAST = {ok:'bg-teal-600', warn:'bg-amber-500', err:'bg-red-600'};
+
+  return <div className="min-h-screen md:flex">
+    <aside className="md:w-64 md:min-h-screen bg-white border-b md:border-b-0 md:border-r border-slate-200 p-4 flex md:flex-col gap-1 overflow-x-auto md:overflow-visible sticky top-0 z-10">
+      <div className="hidden md:block mb-6 px-2">
+        <div className="text-teal-700 font-bold text-xl">PharmaFEFO</div>
+        <div className="text-xs text-slate-400">Min Heap · FEFO Inventory</div>
+      </div>
+      {NAV.map(([k, l, i]) => (
+        <button key={k} onClick={() => setPage(k)}
+          className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm whitespace-nowrap text-left transition ${page === k ? 'bg-teal-600 text-white shadow-sm' : 'text-slate-600 hover:bg-sky-50'}`}>
+          <span>{i}</span><span>{l}</span>
+        </button>))}
+    </aside>
+    <main className="flex-1 p-4 md:p-8 max-w-6xl w-full">
+      <h1 className="text-2xl font-semibold text-slate-800 mb-6">{NAV.find(n => n[0] === page)[1]}</h1>
+      {page === 'dash' && <Dash {...props}/>}
+      {page === 'add' && <AddBatch {...props}/>}
+      {page === 'inv' && <Inventory {...props}/>}
+      {page === 'disp' && <Dispense {...props}/>}
+      {page === 'part' && <PartialDispense {...props}/>}
+      {page === 'purge' && <Purge {...props}/>}
+      {page === 'log' && <ExpiredLog {...props}/>}
+      {page === 'cmp' && <Comparison {...props}/>}
+      {page === 'heap' && <HeapViz {...props}/>}
+    </main>
+    {toast && <div className={`fixed top-4 right-4 z-50 text-white text-sm rounded-xl px-4 py-3 shadow-lg max-w-xs ${TOAST[toast.type]}`}>{toast.msg}</div>}
+  </div>;
+}
+
+// Shared position helper for the heap tree
+function pos(i) {
+  const lv = Math.floor(Math.log2(i + 1)), k = i + 1 - 2 ** lv, span = 720 / 2 ** lv;
+  return { x: span * (k + 0.5), y: 44 + lv * 90 };
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>
